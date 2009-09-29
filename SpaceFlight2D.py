@@ -1,4 +1,5 @@
-#SpaceFlight2D 0.9
+#!/usr/bin/env python
+#SpaceFlight2D 1.0
 #(C) 2008,2009 Robin Wellner <gyvox.public@gmail.com>
 #Please report bugs to: <http://github.com/gvx/spaceflight2d/issues>
 #
@@ -6,7 +7,15 @@
 #it under the terms of the GNU General Public License as published by
 #the Free Software Foundation, either version 3 of the License, or
 #(at your option) any later version.
-#Released under GPL (see http://www.gnu.org/licenses/)
+#
+#This program is distributed in the hope that it will be useful,
+#but WITHOUT ANY WARRANTY; without even the implied warranty of
+#MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+#General Public License for more details.
+#
+#You should have received a copy of the GNU General Public License
+#along with this program; if not, write to the Free Software
+#Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 #
 #Uses:
 # * PyPGL by PyMike
@@ -34,19 +43,31 @@ import ExPGL as PyPGL
 import menu
 from clock import ABClock
 import story
+import sectors
 try:
     import psyco
     psyco.full()
 except:
-    pass #error message goes here
+    pass
 pygame.init()
 
+
+savedir = os.path.expanduser("~/.spaceflight2d/")
+
+if not os.path.isdir(savedir):
+    os.makedirs(savedir+"games")
+    open(savedir+'settings','w').close()
 
 ###################################
 #Anti-Aliased Circle
 def aacircle(Surface,color,pos,radius,resolution,width=1):
+    perstep = 1.0/resolution
+    circle = 2*pi*perstep
+    aaline = pygame.draw.aaline
     for I in xrange(resolution):
-        pygame.draw.aaline(Surface, color, (pos[0] + radius*cos(2*pi*float(I)/resolution), pos[1] + radius*sin(2*pi*float(I)/resolution)), (pos[0] + radius*cos(2*pi*float(I+1)/resolution), pos[1] + radius*sin(2*pi*float(I+1)/resolution)), width)
+        p1 = circle*I
+        p2 = circle*(I+1)
+        aaline(Surface, color, (pos[0] + radius*cos(p1), pos[1] + radius*sin(p1)), (pos[0] + radius*cos(p2), pos[1] + radius*sin(p2)), width)
 
 
 ###################################
@@ -117,7 +138,8 @@ LastGameLoaded = 0
 doCheat = False
 MDOWN = False
 ExtendedVision=False
-GRID_WIDTH = 30
+GRID_WIDTH = 60
+frozen_surface = None
 
 def Play(sndStr):
     if sndStr != 'music':
@@ -178,7 +200,7 @@ SCR_SIZE = (640,480)
 
 ###################################
 #Load Settings
-f = open(os.path.join('data','settings.txt'))
+f = open(savedir+"settings")
 subj = None
 for line in f:
     if line[0] not in '#\n':
@@ -201,6 +223,9 @@ for line in f:
         else:
             subj = line[:-1]
 f.close()
+
+midx = SCR_SIZE[0]/2
+midy = SCR_SIZE[1]/2
 
 for Channel in SoundTypes['FX']:
     SoundChannels[Channel].set_volume(FX_VOLUME/10.0)
@@ -339,7 +364,7 @@ credits = (("SPACEFLIGHT2D", 0),
            ("Code: GNU GPL, version 3", 15),
            ("Music: CC-BY-NC-SA", 15),
            ("Font: see TinyUrl.com/mktuo", 15),
-           ("IDEA: gpwiki.org", 25))
+           ("IDEA: gpwiki.org", 25),)
 
 
 ###################################
@@ -347,19 +372,27 @@ credits = (("SPACEFLIGHT2D", 0),
 def Menu():
     Clock = ABClock()
     Motto = random.choice(Mottos)
-    tick = 0
+    #tick = 0
     focus = 0
     Colours = ((255, 255, 255), (0, 0, 0))
-    Items = [('New game', 'new'), ('Tutorial', 'tutorial'), ('Load game...', 'load'),
+    Items = [('New game', 'new'), ('Tutorial', 'tutorial'),
+             ('Random new game', 'random'),
+             ('Load game...', 'load'),
              ('Options...', 'options'), ('Exit', 'exit')]
     if gameData is not None:
-        Items.insert(1, ('Resume', 'continue'))
+        Items.insert(0, ('Resume', 'continue'))
     itemheight = 30
     totalheight = 50
+    Text = Font.render(Motto, True, (255,255,255))
+    credsurf = pygame.Surface((max(Font.size(cred[0])[0] for cred in credits), sum(cred[1] for cred in credits)))
+    tot_y = 0
+    for line, y in credits:
+        tot_y += y
+        credsurf.blit(Font.render(line, True, (255,255,255)),(0,tot_y))
     while True:
         Clock.tick(10)
         keystate = pygame.key.get_pressed()
-        tick += 1
+        #tick += 1
         for event in pygame.event.get():
             if event.type == QUIT or (event.type == KEYDOWN and event.key == K_ESCAPE):
                 return 'exit'
@@ -387,20 +420,17 @@ def Menu():
             Surface.blit(Font.render(draw_item, True, Colours[focus==n]),
                          (215, 25 + n*totalheight))
         #Info text
-        Text = Font.render(Motto, True, (255,255,255))
         Surface.blit(Text,(200,totalheight*len(Items)+10))
-        tot_y = 0
-        for line, y in credits:
-            tot_y += y
-            Surface.blit(Font.render(line, True, (255,255,255)),(10,tot_y+20))
+        Surface.blit(credsurf, (10,20))
         pygame.display.flip()
 
 
 ###################################
 #Function For Options Menu
 def Options():
-    global FX_VOLUME, MUSIC_VOLUME, SCR_FULL, Surface
+    global FX_VOLUME, MUSIC_VOLUME, SCR_FULL, Surface, SCR_SIZE, midx, midy
     f = 0
+    res = None
     while True:
         Items = [('Sound effects volume', 'fx', 'slider', (FX_VOLUME, 0, 10)),
                  ('Music volume', 'music', 'slider', (MUSIC_VOLUME, 0, 10)),
@@ -421,6 +451,16 @@ def Options():
             for Channel in SoundTypes['FX']:
                 SoundChannels[Channel].set_volume(FX_VOLUME/10.0)
             pygame.mixer.music.set_volume(MUSIC_VOLUME/10.0)
+            if res:
+                try:
+                    Surface = pygame.display.set_mode(res, SCR_FULL and FULLSCREEN)
+                except:
+                    print "fail"
+                else:
+                    SCR_SIZE = res
+                    midx = SCR_SIZE[0]/2
+                    midy = SCR_SIZE[1]/2
+                res = None
             if data['full'].checked != SCR_FULL:
                 Surface = toggle_fullscreen()
                 SCR_FULL = not SCR_FULL
@@ -429,7 +469,7 @@ def Options():
             ChangeKeys()
             f = 4
         elif result == 'size':
-            ChangeRes()
+            res = ChangeRes()
             f = 3
 
 
@@ -452,13 +492,7 @@ def ChangeRes():
             break
     result, data = menu.menu(Surface, reslist, 30, 200, 30, 30, 50, 300, Font, f)
     if result != 'cancel':
-        SCR_SIZE = result
-        try:
-            Surface = pygame.display.set_mode(SCR_SIZE, SCR_FULL and FULLSCREEN)
-        except:
-            pass
-    
-
+        return result
 
 ###################################
 #Menu For Changing Game Keys
@@ -530,7 +564,7 @@ def ReprKey(key):
 #Get Input During Game
 def GetInput():
     keystate = pygame.key.get_pressed()
-    global PlayerImages, GamePaused, LastGameLoaded, doCheat, MDOWN
+    global PlayerImages, GamePaused, LastGameLoaded, doCheat, MDOWN, frozen_surface
     PlayerImages = 0
     for event in pygame.event.get():
         if event.type == QUIT:
@@ -538,6 +572,7 @@ def GetInput():
         elif event.type == KEYUP:
             if event.key == KEYS['PAUSE']:
                 GamePaused = not GamePaused
+                frozen_surface = None
     if keystate[K_ESCAPE]:
         return 'to menu'
     if not GamePaused:
@@ -578,11 +613,11 @@ def GetInput():
             if Hit: Play('shoot')
         if keystate[KEYS['LAUNCH']]:
             PlayerImages = 2
-            playerShip.toX -= sin(radians(playerShip.faceAngle)) * 2
-            playerShip.toY += cos(radians(playerShip.faceAngle)) * 2
+            playerShip.toX -= sin(radians(playerShip.faceAngle)) * 3
+            playerShip.toY += cos(radians(playerShip.faceAngle)) * 3
             playerShip.speed = (playerShip.toX**2 + playerShip.toY**2) ** 0.5
             playerShip.angle = degrees(atan2(-playerShip.toX, playerShip.toY))
-            playerShip.oil -= 10
+            playerShip.oil -= 3
         if keystate[KEYS['BUILD']]:
             if playerShip.landedOn is not None:
                 if PlanetContainer[playerShip.landedOn].baseAt is None and PlanetContainer[playerShip.landedOn].enemyAt is None:
@@ -620,14 +655,16 @@ def GetInput():
                     if playerShip.oil > 20:
                         playerShip.oil -= 5
                         PlanetContainer[playerShip.landedOn].oil += 5
+        if keystate[KEYS['ZOOMIN']]:
+            if playerView.zoomfactor > 1:
+                playerView.zoomfactor = playerView.zoomfactor * .9
+        elif keystate[KEYS['ZOOMOUT']]:
+            if playerView.zoomfactor < 100*640/SCR_SIZE[0]:
+                playerView.zoomfactor = playerView.zoomfactor / .9
+            else:
+                playerView.zoomfactor = 100*640/SCR_SIZE[0]
     if keystate[K_s]:
         SaveAs()
-    if keystate[KEYS['ZOOMIN']]:
-        if playerView.zoomfactor > 1:
-            playerView.zoomfactor = playerView.zoomfactor * .9
-    elif keystate[KEYS['ZOOMOUT']]:
-        if playerView.zoomfactor < 100:
-            playerView.zoomfactor = playerView.zoomfactor / .9
     if keystate[KEYS['MAP']] and not MDOWN:
         if Map() == 'exit':
             return 'exit'
@@ -708,8 +745,9 @@ def Move():
         else:
             Thing.playerLanded = False
         if gameData.stage > 0 and Thing.enemyAt is not None:
-            X = Thing.X + Thing.size*cos(radians(Thing.enemyAt+90))
-            Y = Thing.Y + Thing.size*sin(radians(Thing.enemyAt+90))
+            pos = radians(Thing.enemyAt+90)
+            X = Thing.X + Thing.size*cos(pos)
+            Y = Thing.Y + Thing.size*sin(pos)
             if ((playerShip.X - X)**2 + (playerShip.Y + Y)**2)**.5 < 300:
                 playerShip.hull -= random.randint(1,3)*random.randint(1,3)
                 gameData.shootings = 3
@@ -768,7 +806,7 @@ def Move():
         if Thing.explosion > 10:
             WreckContainer.remove(Thing)
     playerShip.move()
-    if floor(playerShip.X/30000) != floor((playerShip.X-playerShip.toX)/30000) or floor(playerShip.Y/30000) != floor((playerShip.Y-playerShip.toY)/30000):
+    if sectors.pixels2sector(playerShip.X, playerShip.Y) !=  sectors.pixels2sector(playerShip.X-playerShip.toX, playerShip.Y-playerShip.toY):
         checkProgress('sector changed')
     playerView.X = playerShip.X
     playerView.Y = playerShip.Y
@@ -818,129 +856,138 @@ def Move():
 ###################################
 #Function To Draw Everything
 def Draw(update=True):
-    global WreckContainer, ShipContainer, PlanetContainer, Frames, GamePaused, ZoomedOut
-    if gameData.shootings > 0:
-        Surface.fill((100,0,0))
-        gameData.shootings -= 1
+    global WreckContainer, ShipContainer, PlanetContainer, Frames, frozen_surface
+    if GamePaused and update:
+        if not frozen_surface:
+            Text = Font.render("Game paused...", True, (255,255,255))
+            Surface.blit(Text,(40,80))
+            frozen_surface = Surface.copy()
+        Surface.blit(frozen_surface,(0,0))
     else:
-        Surface.fill((0,0,0))
-    #Display direction (Thanks, retroredge, for pointing it out!)
-    tmpColor = (playerView.zoomfactor*2,)*3
-    aacircle(Surface, tmpColor, (320, 240), 180, 45, 1)
-    rads = radians(playerShip.faceAngle+90)
-    rads2 = rads + 2.094 #radians(120)
-    rads3 = rads - 2.094 #this should be precise enough
-    xy = (320+180*cos(rads),240+180*sin(rads))
-    pygame.draw.aaline(Surface, tmpColor, xy, (320+180*cos(rads2),240+180*sin(rads2)), 1)
-    pygame.draw.aaline(Surface, tmpColor, xy, (320+180*cos(rads3),240+180*sin(rads3)), 1)
-    if playerShip.shoot > 0:
-        pygame.draw.circle(Surface,(128,128,128),(320, 240), int(200/playerView.zoomfactor))
-        playerShip.shoot -= 1
-
-    STARy = 240 - playerView.Y/200
-    STARx = 320 - playerView.X/200
-    for i in starData.xlist:
-        for j in starData.ylist:
-            tmp = (i+starData.params[0])*starData.params[1]+(j+starData.params[2])*starData.params[3]+starData.params[4]
-            x = STARx + i * 200 * cos(tmp)
-            y = STARy + j * 200 * sin(tmp)
-            pygame.draw.aaline(Surface, (255,255,255), (x,y), (x+1.5,y+1.5), 1)
-            pygame.draw.aaline(Surface, (255,255,255), (x+1.5,y), (x,y+1.5), 1)
-    
-    for Thing in PlanetContainer:
-        aacircle(Surface,(255,255,255),((Thing.X-playerView.X)/playerView.zoomfactor+320,(-Thing.Y-playerView.Y)/playerView.zoomfactor+240),Thing.size/playerView.zoomfactor,int(10*log(Thing.size*.2/playerView.zoomfactor,2))+20,1)
-        tmpExVisStr = ''
-        if Thing.baseAt is not None:
-            vectorImages['base'].position((320+(-playerView.X+Thing.X+Thing.size*cos(radians(Thing.baseAt+90)))/playerView.zoomfactor ,240+(-playerView.Y-Thing.Y-Thing.size*sin(radians(Thing.baseAt+90)))/playerView.zoomfactor))
-            vectorImages['base'].rotate(Thing.baseAt)
-            vectorImages['base'].scale(0.8/playerView.zoomfactor)
-            vectorImages['base'].draw(Surface, (255,255,255))
-            tmpExVisStr = 'Own base'
-        if Thing.enemyAt is not None:
-            vectorImages['enemy/base'].position((320+(-playerView.X+Thing.X+Thing.size*cos(radians(Thing.enemyAt+90)))/playerView.zoomfactor ,240+(-playerView.Y-Thing.Y-Thing.size*sin(radians(Thing.enemyAt+90)))/playerView.zoomfactor))
-            vectorImages['enemy/base'].rotate(Thing.enemyAt)
-            vectorImages['enemy/base'].scale(0.8/playerView.zoomfactor)
-            vectorImages['enemy/base'].draw(Surface, (255,255,255))
-            tmpExVisStr = 'Enemy base'
-        if ExtendedVision:
-            tmpExVisx = (Thing.X-playerView.X)/playerView.zoomfactor+320
-            tmpExVisy = (-Thing.Y-playerView.Y)/playerView.zoomfactor+240
-            Surface.blit(Font.render(tmpExVisStr, True, (255,255,255)),(tmpExVisx,tmpExVisy))
-            Surface.blit(Font.render('Oil: '+str(int(Thing.oil)), True, (255,255,255)),(tmpExVisx,tmpExVisy+15))
-    for Thing in ShipContainer:
-        vectorImages['enemy/ship'].position((320+(-playerView.X+Thing.X)/playerView.zoomfactor ,240+(-playerView.Y-Thing.Y)/playerView.zoomfactor))
-        vectorImages['enemy/ship'].rotate(Thing.faceAngle)
-        vectorImages['enemy/ship'].scale(0.5/playerView.zoomfactor)
-        vectorImages['enemy/ship'].explode(0)
-        vectorImages['enemy/ship'].draw(Surface, (255,255,255))
-    for Thing in WreckContainer:
-        vectorImages['enemy/ship'].position((320+(-playerView.X+Thing.X)/playerView.zoomfactor ,240+(-playerView.Y-Thing.Y)/playerView.zoomfactor))
-        vectorImages['enemy/ship'].rotate(Thing.faceAngle)
-        vectorImages['enemy/ship'].scale(0.5/playerView.zoomfactor)
-        vectorImages['enemy/ship'].explode(Thing.explosion)
-        vectorImages['enemy/ship'].draw(Surface, (255,255,255), max=int(7-Thing.explosion))
-
-    if PlayerImages == 0:
-        imgStr = '1'
-    elif PlayerImages == 1:
-        if (Frames//5) % 2:
-            imgStr = '3'
+        if gameData.shootings > 0:
+            Surface.fill((100,0,0))
+            gameData.shootings -= 1
         else:
-            imgStr = '2'
-    elif PlayerImages == 2:
-        if (Frames//5) % 2:
-            imgStr = '2'
-        else:
-            imgStr = '4'
-    vectorImages['player/'+imgStr].position((320, 240))
-    vectorImages['player/'+imgStr].rotate(-playerShip.faceAngle-180+playerView.angle)
-    vectorImages['player/'+imgStr].scale(0.3/playerView.zoomfactor)
-    vectorImages['player/'+imgStr].draw(Surface, (255,255,255))
-    
-    pygame.draw.rect(Surface, (255-playerShip.oil*255/playerShip.maxoil if playerShip.oil > 0 else 255, 0, playerShip.oil*255/playerShip.maxoil if playerShip.oil > 0 else 0), (8, 8+(playerShip.maxoil-playerShip.oil)*464/playerShip.maxoil, 20, playerShip.oil*464/playerShip.maxoil), 0)
-    if playerShip.oil < 100:
-        c_ = CLR_WARNING
-        n_ = 2
-    else:
-        c_ = CLR_NORMAL
-        n_ = 1
-    pygame.draw.rect(Surface, c_, (8, 8, 20, 464), n_)
+            Surface.fill((0,0,0))
+        #Display direction (Thanks, retroredge, for pointing it out!)
+        tmpColor = (playerView.zoomfactor*SCR_SIZE[0]*2/640,)*3
+        radius = SCR_SIZE[1]/8*3
+        aacircle(Surface, tmpColor, (midx, midy), radius, 45, 1)
+        rads = radians(playerShip.faceAngle+90)
+        rads2 = rads + 2.094 #radians(120)
+        rads3 = rads - 2.094 #this should be precise enough
+        #240/180
+        #180/3*4=240
+        xy = (midx+radius*cos(rads),midy+radius*sin(rads))
+        pygame.draw.aaline(Surface, tmpColor, xy, (midx+radius*cos(rads2),midy+radius*sin(rads2)), 1)
+        pygame.draw.aaline(Surface, tmpColor, xy, (midx+radius*cos(rads3),midy+radius*sin(rads3)), 1)
+        if playerShip.shoot > 0:
+            pygame.draw.circle(Surface,(128,128,128),(midx, midy), int(200/playerView.zoomfactor))
+            playerShip.shoot -= 1
 
-    pygame.draw.rect(Surface, (0, 255, 0), (40, 8, 592*playerShip.hull/playerShip.maxhull, 20), 0)
-    if playerShip.hull < 50:
-        c_ = CLR_WARNING
-        n_ = 2
-    else:
-        c_ = CLR_NORMAL
-        n_ = 1
-    pygame.draw.rect(Surface, c_, (40, 8, 592, 20), n_)
-    
-    if playerShip.speed > 16:
-        c_ = CLR_WARNING
-    else:
-        c_ = CLR_NORMAL
-    Text = BigFont.render("Speed: %.2d" % playerShip.speed, True, c_)
-    Surface.blit(Text,(40,40))
-    if GamePaused:
-        Text = Font.render("Game paused...", True, (255,255,255))
-        Surface.blit(Text,(40,80))
-    Text = Font.render("Bases built: " + str(gameData.basesBuilt), True, (255,255,255))
-    Surface.blit(Text,(40,95))
-    Text = Font.render("You are in Sector " + str(int(floor(playerShip.X/30000))) + ":" + str(int(floor(playerShip.Y/30000))), True, (255,255,255))
-    Surface.blit(Text,(40,125))
-    top = 40
-    for task in gameData.tasks:
-        Text = Font.render(task, True, (255,255,255))
-        top += 13
-        Surface.blit(Text,(400,top))
-    if playerShip.landedOn is not None:
-        if PlanetContainer[playerShip.landedOn].playerLanded == 'base':
-            Text = Font.render("Oil on planet: " + str(int(PlanetContainer[playerShip.landedOn].oil)), True, (255,255,255))
-            Surface.blit(Text,(40,110))
-    elif playerShip.landedBefore is not None:
-        if PlanetContainer[playerShip.landedBefore].playerLanded == 'base':
-            Text = Font.render("Oil on planet: " + str(int(PlanetContainer[playerShip.landedBefore].oil)), True, (255,255,255))
-            Surface.blit(Text,(40,110))
+        STARy = midy - playerView.Y/200
+        STARx = midx - playerView.X/200
+        for i in starData.xlist:
+            for j in starData.ylist:
+                tmp = (i+starData.params[0])*starData.params[1]+(j+starData.params[2])*starData.params[3]+starData.params[4]
+                x = STARx + i * 200 * cos(tmp)
+                y = STARy + j * 200 * sin(tmp)
+                pygame.draw.aaline(Surface, (255,255,255), (x,y), (x+1.5,y+1.5), 1)
+                pygame.draw.aaline(Surface, (255,255,255), (x+1.5,y), (x,y+1.5), 1)
+        
+        for Thing in PlanetContainer:
+            aacircle(Surface,(255,255,255),((Thing.X-playerView.X)/playerView.zoomfactor+midx,(-Thing.Y-playerView.Y)/playerView.zoomfactor+midy),Thing.size/playerView.zoomfactor,int(10*log(Thing.size*.2/playerView.zoomfactor,2))+20,1)
+            tmpExVisStr = ''
+            if Thing.baseAt is not None:
+                vectorImages['base'].position((midx+(-playerView.X+Thing.X+Thing.size*cos(radians(Thing.baseAt+90)))/playerView.zoomfactor ,midy+(-playerView.Y-Thing.Y-Thing.size*sin(radians(Thing.baseAt+90)))/playerView.zoomfactor))
+                vectorImages['base'].rotate(Thing.baseAt)
+                vectorImages['base'].scale(0.8/playerView.zoomfactor)
+                vectorImages['base'].draw(Surface, (255,255,255))
+                tmpExVisStr = 'Own base'
+            if Thing.enemyAt is not None:
+                vectorImages['enemy/base'].position((midx+(-playerView.X+Thing.X+Thing.size*cos(radians(Thing.enemyAt+90)))/playerView.zoomfactor ,midy+(-playerView.Y-Thing.Y-Thing.size*sin(radians(Thing.enemyAt+90)))/playerView.zoomfactor))
+                vectorImages['enemy/base'].rotate(Thing.enemyAt)
+                vectorImages['enemy/base'].scale(0.8/playerView.zoomfactor)
+                vectorImages['enemy/base'].draw(Surface, (255,255,255))
+                tmpExVisStr = 'Enemy base'
+            if ExtendedVision:
+                tmpExVisx = (Thing.X-playerView.X)/playerView.zoomfactor+midx
+                tmpExVisy = (-Thing.Y-playerView.Y)/playerView.zoomfactor+midy
+                Surface.blit(Font.render(tmpExVisStr, True, (255,255,255)),(tmpExVisx,tmpExVisy))
+                Surface.blit(Font.render('Oil: '+str(int(Thing.oil)), True, (255,255,255)),(tmpExVisx,tmpExVisy+15))
+        for Thing in ShipContainer:
+            vectorImages['enemy/ship'].position((midx+(-playerView.X+Thing.X)/playerView.zoomfactor ,midy+(-playerView.Y-Thing.Y)/playerView.zoomfactor))
+            vectorImages['enemy/ship'].rotate(Thing.faceAngle)
+            vectorImages['enemy/ship'].scale(0.5/playerView.zoomfactor)
+            vectorImages['enemy/ship'].explode(0)
+            vectorImages['enemy/ship'].draw(Surface, (255,255,255))
+        for Thing in WreckContainer:
+            vectorImages['enemy/ship'].position((midx+(-playerView.X+Thing.X)/playerView.zoomfactor ,midy+(-playerView.Y-Thing.Y)/playerView.zoomfactor))
+            vectorImages['enemy/ship'].rotate(Thing.faceAngle)
+            vectorImages['enemy/ship'].scale(0.5/playerView.zoomfactor)
+            vectorImages['enemy/ship'].explode(Thing.explosion)
+            vectorImages['enemy/ship'].draw(Surface, (255,255,255), max=int(7-Thing.explosion))
+
+        if PlayerImages == 0:
+            imgStr = '1'
+        elif PlayerImages == 1:
+            if (Frames//5) % 2:
+                imgStr = '3'
+            else:
+                imgStr = '2'
+        elif PlayerImages == 2:
+            if (Frames//5) % 2:
+                imgStr = '2'
+            else:
+                imgStr = '4'
+        vectorImages['player/'+imgStr].position((midx, midy))
+        vectorImages['player/'+imgStr].rotate(-playerShip.faceAngle-180+playerView.angle)
+        vectorImages['player/'+imgStr].scale(0.3/playerView.zoomfactor)
+        vectorImages['player/'+imgStr].draw(Surface, (255,255,255))
+        
+        pygame.draw.rect(Surface, (255-playerShip.oil*255/playerShip.maxoil if playerShip.oil > 0 else 255, 0, playerShip.oil*255/playerShip.maxoil if playerShip.oil > 0 else 0), (8, 8+(playerShip.maxoil-playerShip.oil)*(SCR_SIZE[1]-16)/playerShip.maxoil, 20, playerShip.oil*(SCR_SIZE[1]-16)/playerShip.maxoil), 0)
+        if playerShip.oil < 100:
+            c_ = CLR_WARNING
+            n_ = 2
+        else:
+            c_ = CLR_NORMAL
+            n_ = 1
+        #pygame.draw.rect(Surface, c_, (8, 8, 20, 464), n_)
+        pygame.draw.rect(Surface, c_, (8, 8, 20, SCR_SIZE[1]-16), n_)
+
+        #pygame.draw.rect(Surface, (0, 255, 0), (40, 8, 592*playerShip.hull/playerShip.maxhull, 20), 0)
+        pygame.draw.rect(Surface, (0, 255, 0), (40, 8, (SCR_SIZE[0]-48)*playerShip.hull/playerShip.maxhull, 20), 0)
+        if playerShip.hull < 50:
+            c_ = CLR_WARNING
+            n_ = 2
+        else:
+            c_ = CLR_NORMAL
+            n_ = 1
+        pygame.draw.rect(Surface, c_, (40, 8, SCR_SIZE[0]-48, 20), n_)
+        
+        if playerShip.speed > 16:
+            c_ = CLR_WARNING
+        else:
+            c_ = CLR_NORMAL
+        Text = BigFont.render("Speed: %.2d" % playerShip.speed, True, c_)
+        Surface.blit(Text,(40,40))
+        Text = Font.render("Bases built: " + str(gameData.basesBuilt), True, (255,255,255))
+        Surface.blit(Text,(40,95))
+        Text = Font.render("You are in Sector " + sectors.pixels2sector(playerShip.X,playerShip.Y), True, (255,255,255))
+        Surface.blit(Text,(40,125))
+        top = 40
+        for task in gameData.tasks:
+            Text = Font.render(task, True, (255,255,255))
+            top += 13
+            Surface.blit(Text,(SCR_SIZE[0]-240,top))
+        if playerShip.landedOn is not None:
+            if PlanetContainer[playerShip.landedOn].playerLanded == 'base':
+                Text = Font.render("Oil on planet: " + str(int(PlanetContainer[playerShip.landedOn].oil)), True, (255,255,255))
+                Surface.blit(Text,(40,110))
+        elif playerShip.landedBefore is not None:
+            if PlanetContainer[playerShip.landedBefore].playerLanded == 'base':
+                Text = Font.render("Oil on planet: " + str(int(PlanetContainer[playerShip.landedBefore].oil)), True, (255,255,255))
+                Surface.blit(Text,(40,110))
     if update:
         pygame.display.flip()
 
@@ -951,44 +998,70 @@ def DisplayMessage(msg, source='Game'):
     global GamePaused
     GamePaused = True
     Clock = ABClock()
+    allowReturn = False
+    Draw(False)
+    wordsHad = 0
+    words = msg.split(' ')
+    if Font.size(msg)[0] > 380:
+        height = 0
+        line = ''
+        len_print_text = 0
+        for word in words:
+            if Font.size(line + word + " ")[0] < 380:
+                line += word + ' '
+            else:
+                height += Font.size(line)[1]
+                line = word + " "
+                len_print_text += 1
+        height += Font.size(line)[1]
+        len_print_text += 1
+    else:
+        height = Font.size(msg)[1]
+        len_print_text = 1
+    pygame.draw.rect(Surface, (155, 155, 155), (SCR_SIZE[0]/2 - 220,
+                      SCR_SIZE[1]/2 - 70, 400, 30), 0)
+    pygame.draw.rect(Surface, (255, 255, 255), (SCR_SIZE[0]/2 - 220,
+                      SCR_SIZE[1]/2 - 40, 400, 40+height), 0)
+    Surface.blit(Font.render(source, True, (0,0,0)),
+                 (SCR_SIZE[0]/2 - 210,SCR_SIZE[1]/2 - 65))
+    Surface.blit(Font.render("Press [RETURN] to continue...", True, (0,0,0)),
+                 (SCR_SIZE[0]/2 - 100,SCR_SIZE[1]/2 - 20+height))
+    pygame.display.flip()
+    tmp = Surface.copy()
     while True:
         Clock.tick(20)
         for event in pygame.event.get():
             if event.type == QUIT:
                 GamePaused = False
                 return
-        keystate = pygame.key.get_pressed()
-        if keystate[K_RETURN]:
-            GamePaused = False
-            return
-        Draw(False)
-        if Font.size(msg)[0] > 380:
-            words = msg.split(' ')
-            print_text = []
-            line = ''
-            height = 0
-            for word in words:
-                if Font.size(line + word + " ")[0] < 380:
-                    line += word + ' '
-                else:
-                    print_text.append(line)
-                    height += Font.size(line)[1]
-                    line = word + " "
-            print_text.append(line)
-            height += Font.size(line)[1]
+        if pygame.key.get_pressed()[K_RETURN]:
+            if allowReturn:
+                GamePaused = False
+                return
         else:
-            print_text = [msg]
-            height = Font.size(msg)[1]
-        pygame.draw.rect(Surface, (155, 155, 155), (100, 160, 400, 40), 0)
-        pygame.draw.rect(Surface, (255, 255, 255), (100, 200, 400, 40+height), 0)
-        Text = Font.render(source, True, (0,0,0))
-        Surface.blit(Text,(110,170))
-        for i in range(len(print_text)):
-            m = print_text[i]
-            Text = Font.render(m, True, (0,0,0))
-            Surface.blit(Text,(110,210+i*height/len(print_text)))
-        Text = Font.render("Press [RETURN] to continue...", True, (0,0,0))
-        Surface.blit(Text,(220,220+height))
+            allowReturn = True
+        Surface.blit(tmp,(0,0))
+        if wordsHad < len(words):
+            wordsHad += 1
+            tmsg = words[:wordsHad]
+            if Font.size(' '.join(tmsg))[0] > 380:
+                print_text = []
+                line = ''
+                for word in tmsg:
+                    if Font.size(line + word + " ")[0] < 380:
+                        line += word + ' '
+                    else:
+                        print_text.append(line)
+                        line = word + " "
+                print_text.append(line)
+            else:
+                print_text = [' '.join(tmsg)]
+            for i in range(len(print_text)):
+                m = print_text[i]
+                Text = Font.render(m, True, (0,0,0))
+                Surface.blit(Text,(SCR_SIZE[0]/2 - 210,SCR_SIZE[1]/2 - 30+i*height/len_print_text))
+            if wordsHad == len(words):
+                tmp = Surface.copy()
         pygame.display.flip()
 
 
@@ -1000,7 +1073,7 @@ def SetUpGame():
     gameData.tutorial = False
     PlanetContainer = [Planet(0, -1050, 1000)]
     gameData.homePlanet = PlanetContainer[0]
-    gameData.tasks = ["Build a base on another planet"]
+    gameData.tasks = []#"Build a base on another planet"]
     PlanetContainer[0].baseAt = 0
     ShipContainer = []
     ShipContainer.append(enemyShip(200, 200, 0, 0, 2, (0, -1050, 1500)))
@@ -1032,7 +1105,60 @@ def SetUpGame():
                        random.random(),
                        random.random(),
                        random.random())
-    Game()
+    checkProgress('game started')
+    return Game()
+
+
+###################################
+#Starting A Random Game
+def RandomGame():
+    global WreckContainer, ShipContainer, PlanetContainer, ArchiveContainer, playerShip, gameData, SystemContainer
+    gameData = GameData()
+    gameData.tutorial = False
+    PlanetContainer = [Planet(0, -1050, 1000)]
+    gameData.homePlanet = PlanetContainer[0]
+    gameData.tasks = []#"Build a base on another planet"]
+    PlanetContainer[0].baseAt = 0
+    ShipContainer = []
+    ShipContainer.append(enemyShip(200, 200, 0, 0, 2, (0, -1050, 1500)))
+    WreckContainer = []
+    ArchiveContainer = []
+    SystemContainer = [(0, 0, "Home System")]
+    for newPlanetX in range(-1, 2):
+        for newPlanetY in range(-1, 2):
+            if newPlanetX == 0 and newPlanetY == 0: continue
+            PlanetContainer.append(Planet(newPlanetX * 20000 + random.randint(-8000, 8000), newPlanetY * 18000 + random.randint(-6000, 6000), random.randint(250, 1500)))
+            PlanetContainer[-1].enemyAt = random.choice((None, random.randint(0, 360)))
+    for SYS in range(5):
+        rndX = random.choice((-1, 1)) * random.randint(3, 10) * 10000
+        rndY = random.choice((-1, 1)) * random.randint(3, 10) * 10000
+        SystemContainer.append((rndX*GRID_WIDTH/sectors.SECTOR_SIZE, rndY*GRID_WIDTH/sectors.SECTOR_SIZE, story.NewSystemName()))#"Unnamed system")
+        for newPlanetX in range(-1, 2):
+            for newPlanetY in range(-1, 2):
+                ArchiveContainer.append(Planet(rndX + newPlanetX * 20000 + random.randint(-8000, 8000), -rndY + newPlanetY * 18000 + random.randint(-6000, 6000), random.randint(250, 1500)))
+                ArchiveContainer[-1].enemyAt = random.choice((None, random.randint(0, 360)))
+    PlanetContainer[0].playerLanded = 'base'
+    playerShip.X = 0
+    playerShip.Y = 25
+    playerShip.angle = 0
+    playerShip.faceAngle = 180
+    playerShip.speed = 0
+    playerShip.hull = 592
+    playerShip.toX = 0
+    playerShip.toY = 0
+    playerView.X = 0
+    playerView.Y = 0
+    playerView.angle = 0
+    playerView.zoomfactor = 1
+    gameData.basesBuilt = 0
+    playerShip.oil = 1000
+    starData.params = (random.random(),
+                       random.random(),
+                       random.random(),
+                       random.random(),
+                       random.random())
+    checkProgress('game started')
+    return Game()
 
 
 ###################################
@@ -1060,6 +1186,8 @@ def Tutorial():
     playerShip.hull = 592
     playerShip.toX = 0
     playerShip.toY = 0
+    playerShip.landedOn = None
+    playerShip.landedBefore = None
     playerView.X = 0
     playerView.Y = 0
     playerView.angle = 0
@@ -1072,18 +1200,18 @@ def Tutorial():
                        random.random(),
                        random.random())
     checkProgress('game started')
-    Game()
+    return Game()
 
 
 ###################################
 #Returns A List Of Saved Games
 def ListGames():
-    return [file[:-4] for file in os.listdir(os.path.join("data", 'games')) if file.endswith(".pkl")]
+    return [file[:-4] for file in os.listdir(savedir+"games") if file.endswith(".pkl")]
 
 ###################################
 #Opens A Certain Game File
 def OpenGameFile(file, mode):
-    return open(os.path.join("data", 'games', file+'.pkl'), mode)
+    return open(savedir+"games/"+file+'.pkl', mode)
 
 
 ###################################
@@ -1104,40 +1232,20 @@ def Load():
 ###################################
 #Load A Game
 def LoadGame(Slot):
-    global LastGameLoaded, playerShip, playerView, gameData, WreckContainer, ShipContainer, PlanetContainer, ArchiveContainer, starData
+    global LastGameLoaded, playerShip, playerView, gameData, WreckContainer, ShipContainer, PlanetContainer, ArchiveContainer, starData, SystemContainer
     LastGameLoaded = Slot
     f = OpenGameFile(Slot, 'rb')
     try:
         test = cPickle.load(f)
-        if isinstance(test, str):
-            if test == '0.9B':
-                playerShip = cPickle.load(f)
-                playerView = cPickle.load(f)
-                gameData = cPickle.load(f)
-                ShipContainer = cPickle.load(f)
-                WreckContainer = cPickle.load(f)
-                PlanetContainer = cPickle.load(f)
-                ArchiveContainer = cPickle.load(f)
-                SystemContainer = cPickle.load(f)
-                starData = cPickle.load(f)
-            elif test == '0.9':
-                playerShip = cPickle.load(f)
-                playerView = cPickle.load(f)
-                gameData = cPickle.load(f)
-                ShipContainer = cPickle.load(f)
-                WreckContainer = cPickle.load(f)
-                PlanetContainer = cPickle.load(f)
-                ArchiveContainer = cPickle.load(f)
-                SystemContainer = [(0, 0, "Home System")]
-                starData = cPickle.load(f)
-        else:
-            playerShip = test
+        if test == '1.0':
+            playerShip = cPickle.load(f)
             playerView = cPickle.load(f)
             gameData = cPickle.load(f)
             ShipContainer = cPickle.load(f)
-            WreckContainer = []
+            WreckContainer = cPickle.load(f)
             PlanetContainer = cPickle.load(f)
             ArchiveContainer = cPickle.load(f)
+            SystemContainer = cPickle.load(f)
             starData = cPickle.load(f)
     except:
         f.close()
@@ -1226,7 +1334,7 @@ def SaveAs():
 def Save(Slot):
     global LastGameLoaded
     f = OpenGameFile(Slot, 'wb')
-    cPickle.dump('0.9', f, -1)
+    cPickle.dump('1.0', f, -1)
     cPickle.dump(playerShip, f, -1)
     cPickle.dump(playerView, f, -1)
     cPickle.dump(gameData, f, -1)
@@ -1234,34 +1342,33 @@ def Save(Slot):
     cPickle.dump(WreckContainer, f, -1)
     cPickle.dump(PlanetContainer, f, -1)
     cPickle.dump(ArchiveContainer, f, -1)
+    cPickle.dump(SystemContainer, f, -1)
     cPickle.dump(starData, f, -1)
     f.close()
     LastGameLoaded = Slot
 
 
 ###################################
-#Helper Function For Map() That Gives Randomized Coordinates
-def map_randxy():
-    if random.randint(0, 100) < 6:
-        return random.randint(-5,5)
-    return 0
-
-
-###################################
 #Show A Map To Help Navigating
 def Map():
     Clock = ABClock()
-    viewx = posx = playerShip.X/30000*GRID_WIDTH
-    viewy = posy = playerShip.Y/30000*GRID_WIDTH
+    viewx = posx = playerShip.X/sectors.SECTOR_SIZE*GRID_WIDTH
+    viewy = posy = playerShip.Y/sectors.SECTOR_SIZE*GRID_WIDTH
     #viewx = 0
     #viewy = 0
     Frames = 0
     green = (0, 210, 0)
+    #darkgreen = (0, 70, 0)
     lgreen = (10, 255, 10)
     white = (255,255,255)
-    t = "You are here"
-    p = Font.render(t, 1, white)
-    txtwd = Font.size(t)[0]
+    #t = "You are here"
+    #p = Font.render(t, 1, white)
+    #txtwd = Font.size(t)[0]
+    shift = (SCR_SIZE[0]/2)%GRID_WIDTH-GRID_WIDTH/2
+    shifty = (SCR_SIZE[1]/2)%GRID_WIDTH-GRID_WIDTH/2
+    sysdraw = []
+    for system in SystemContainer:
+        sysdraw.append((int(GRID_WIDTH*int((SCR_SIZE[0]/2+ system[0])/GRID_WIDTH)+.5*GRID_WIDTH -SCR_SIZE[0]%GRID_WIDTH),  int(GRID_WIDTH*int((SCR_SIZE[1]/2 + system[1]+.5*GRID_WIDTH)/GRID_WIDTH)-.5*GRID_WIDTH-SCR_SIZE[1]%GRID_WIDTH)))
     while True:
         Clock.tick(15)
         keystate = pygame.key.get_pressed()
@@ -1283,19 +1390,28 @@ def Map():
         Frames+=1
         #green[1] = int(200+sin(Frames/10.0)*50)
         Surface.fill((0,0,0))
+        syscol = 100+50*sin(Frames*.2)
+        #syscol = min(100+50*min(tan(Frames*.01), 1)**4, 255)
+        for system0, system1 in sysdraw:
+            #pygame.draw.rect(Surface,(syscol,syscol,syscol),(int( - viewx + GRID_WIDTH*int((SCR_SIZE[0]/2+ system[0])/GRID_WIDTH)+.5*GRID_WIDTH -SCR_SIZE[0]%GRID_WIDTH),  - viewy + int(GRID_WIDTH*int((SCR_SIZE[1]/2 + system[1]+.5*GRID_WIDTH)/GRID_WIDTH)-.5*GRID_WIDTH-SCR_SIZE[1]%GRID_WIDTH), GRID_WIDTH, GRID_WIDTH))
+            pygame.draw.rect(Surface,(syscol,syscol,syscol),(system0- viewx, system1 - viewy, GRID_WIDTH, GRID_WIDTH))
+            #pygame.draw.rect(Surface,(syscol,syscol,syscol),
+            #    (GRID_WIDTH*int((SCR_SIZE[0]/2+ system[0])/GRID_WIDTH)+int(.5*GRID_WIDTH) -SCR_SIZE[0]%GRID_WIDTH - viewx,
+            #     GRID_WIDTH*int((SCR_SIZE[1]/2+ system[1])/GRID_WIDTH)+int(.5*GRID_WIDTH) -SCR_SIZE[1]%GRID_WIDTH - viewy,
+            #    GRID_WIDTH, GRID_WIDTH))
         for X in xrange(SCR_SIZE[0]/GRID_WIDTH+2):
-            pygame.draw.line(Surface, green, (X*GRID_WIDTH - viewx%GRID_WIDTH, 0), (X*GRID_WIDTH - viewx%GRID_WIDTH, SCR_SIZE[1]))
+            pygame.draw.line(Surface, green, (X*GRID_WIDTH - viewx%GRID_WIDTH + shift, 0), (X*GRID_WIDTH - viewx%GRID_WIDTH + shift, SCR_SIZE[1]))
         for Y in xrange(SCR_SIZE[1]/GRID_WIDTH+2):
-            pygame.draw.line(Surface, green, (0, Y*GRID_WIDTH - viewy%GRID_WIDTH), (SCR_SIZE[0], Y*GRID_WIDTH - viewy%GRID_WIDTH))
-        Surface.blit(p, (SCR_SIZE[0]/2 - viewx + posx - txtwd - 10, SCR_SIZE[1]/2 - viewy + posy - 10))
+            pygame.draw.line(Surface, green, (0, Y*GRID_WIDTH - viewy%GRID_WIDTH - shifty), (SCR_SIZE[0], Y*GRID_WIDTH - viewy%GRID_WIDTH - shifty))
+        #Surface.blit(p, (SCR_SIZE[0]/2 - viewx + posx - txtwd - 10, SCR_SIZE[1]/2 - viewy + posy - 10))
+        for system in SystemContainer:
+            Surface.blit(Font.render(system[2], 1, white), (SCR_SIZE[0]/2 - viewx + system[0], SCR_SIZE[1]/2 - viewy + system[1] - 5))
+            #pygame.draw.circle(Surface,green,(int(SCR_SIZE[0]/2 - viewx + system[0]), int(SCR_SIZE[1]/2 - viewy + system[1])),4,0)
         pX = int(SCR_SIZE[0]/2 - viewx + posx)
         pY = int(SCR_SIZE[1]/2 - viewy + posy)
-        pygame.draw.aaline(Surface, lgreen, (pX-9000,pY-9000), (pX+9000,pY+9000))
-        pygame.draw.aaline(Surface, lgreen, (pX-9000,pY+9000), (pX+9000,pY-9000))
+        pygame.draw.aaline(Surface, lgreen, (pX-9000,pY-9000), (pX+9000,pY+9000), 4)
+        pygame.draw.aaline(Surface, lgreen, (pX-9000,pY+9000), (pX+9000,pY-9000), 4)
         #aacircle(Surface,green,(SCR_SIZE[0]/2 - viewx, SCR_SIZE[1]/2 - viewy),6,10)
-        for system in SystemContainer:
-            pygame.draw.circle(Surface,green,(int(SCR_SIZE[0]/2 - viewx + system[0]), int(SCR_SIZE[1]/2 - viewy + system[1])),4,0)
-            Surface.blit(Font.render(system[2], 1, white), (SCR_SIZE[0]/2 - viewx + system[0] + 5, SCR_SIZE[1]/2 - viewy + system[1] - 5))
         #pygame.draw.circle(Surface,green,(SCR_SIZE[0]/2 - viewx, SCR_SIZE[1]/2 - viewy),6,0)
         pygame.display.flip()
 
@@ -1324,13 +1440,10 @@ def Game():
 ###################################
 #Save Settings To File
 def SaveSettings():
-    f = open('data/settings.txt', 'w')
+    f = open(savedir+"settings", 'w')
     f.write('Sound Volume\n\tMusic: %d\n\tEffects: %d\n'
             'Keys\n\tUp: %d\n\tLeft: %d\n\tRight: %d\n\tFire: %d\n\tLaunch: %d\n\tBuild: %d\n\tRepair: %d\n\tFill: %d\n\tPause: %d\n\tZoomOut: %d\n'
-            '\tZoomIn: %d\n\tDrop: %d\n\tMap: %d\n\tExVis: %d\nScreen\n\tMode: %s\n\tSize: %s\n\n'
-            '#Default Keys:\n#Action\t\tKey\tCode\n#Speed Up\tUp\t273\n#Steer Left\tLeft\t276\n#Steer Right\tRight\t275\n#Fire\t\tSpace\t32\n'
-            '#Launch\t\tRShift\t303\n#Build Base\tB\t98\n'
-            '#Repair\t\tR\t114\n#Fill oil tank\tF\t102\n#Pause\t\tP\t112\n#Zoom out\tZ\t122\n#Zoom in\tA\t97\n#Drop\t\tD\t100\n#Map\t\tM\t109\n#ExVis\t\tE\t101\n#For other key codes, check pygame.locals'
+            '\tZoomIn: %d\n\tDrop: %d\n\tMap: %d\n\tExVis: %d\nScreen\n\tMode: %s\n\tSize: %s\n'
             % (MUSIC_VOLUME, FX_VOLUME, KEYS['UP'], KEYS['LEFT'], KEYS['RIGHT'], KEYS['FIRE'], KEYS['LAUNCH'], KEYS['BUILD'], KEYS['REPAIR'], KEYS['FILL'], KEYS['PAUSE'], KEYS['ZOOMOUT'], KEYS['ZOOMIN'], KEYS['DROP'], KEYS['MAP'], KEYS['EXVIS'], 'Full' if SCR_FULL else 'Windowed', 'x'.join(str(i) for i in SCR_SIZE)))
     f.close()
 
@@ -1354,6 +1467,9 @@ def Main():
                 break
         elif result == 'tutorial':
             if Tutorial() == 'exit':
+                break
+        elif result == 'random':
+            if RandomGame() == 'exit':
                 break
         elif result == 'load':
             if Load() == 'exit':

@@ -1,11 +1,10 @@
-SpaceFlight2D is a small 2D space shooter. Fly to planets and conquer the universe!
+SpaceFlight2D is a small 2D space shooter.
+You are the captain of the Sigma Phi II, a Delta class space ship, in service
+of HyperCorp, an interplanetery oil company.
+Fly to planets and conquer the universe!
 
-Features to come before V1.0
+Default controls:
 
-   1. A storyline
-
-Controls
-Key     Action
 LEFT    Turn left
 RIGHT   Turn right
 UP      Speed up
